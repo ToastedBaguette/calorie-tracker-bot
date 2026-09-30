@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      - TZ=Asia/Jakarta          # container clocks are UTC otherwise
+    volumes:
+      # Service account key for Google Sheets
+      - ./service_account.json:/app/service_account.json:ro
+    restart: unless-stopped      # survives crashes and host reboots
+    mem_limit: 256m              # shared e2-micro host: one leaking bot can't starve the others
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,29 @@
+{
+  "name": "calorie-tracker-bot",
+  "version": "1.0.0",
+  "description": "Personal Discord calorie & nutrition tracker bot powered by Gemini Vision and Google Sheets",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "discord",
+    "gemini",
+    "calorie-tracker",
+    "nutrition",
+    "google-sheets"
+  ],
+  "author": "Rony Hartono Irawan",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google/genai": "^2.24.0",
+    "@googleapis/sheets": "^18.0.1",
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.6.1"
+  }
+}
