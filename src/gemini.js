@@ -39,12 +39,6 @@ const FOOD_ITEM_SCHEMA = {
 };
 
 const COMMON_PROPERTIES = {
-  meal: {
-    type: Type.STRING,
-    enum: ["AUTO", ...MEALS],
-    description:
-      "Meal type ONLY if the user explicitly says it (sarapan/breakfast, makan siang/lunch, makan malam/dinner, camilan/snack). Otherwise AUTO.",
-  },
   dayOffset: {
     type: Type.INTEGER,
     description: "0 unless the user says when it was eaten: -1 for 'kemarin'/yesterday, -2 for two days ago, etc.",
@@ -64,13 +58,20 @@ const COMMON_PROPERTIES = {
 const FOOD_LOG_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    isFood: {
-      type: Type.BOOLEAN,
-      description: "True if the input shows or describes food/drink the user consumed. False for greetings, questions, or images without food.",
+    intent: {
+      type: Type.STRING,
+      enum: ["NEW", "CORRECT_PREVIOUS", "NONE"],
+      description:
+        "NEW: the input shows or describes food/drink the user consumed. CORRECT_PREVIOUS: the text adjusts the previous entry given in the prompt (only possible when one is given). NONE: no food or drink (greeting, question, unrelated image).",
+    },
+    meal: {
+      type: Type.STRING,
+      enum: MEALS,
+      description: "Meal type, following the MEAL TYPE rules.",
     },
     ...COMMON_PROPERTIES,
   },
-  required: ["isFood", "meal", "dayOffset", "items", "confidence", "notes"],
+  required: ["intent", "meal", "dayOffset", "items", "confidence", "notes"],
 };
 
 const REVISION_SCHEMA = {
@@ -82,10 +83,20 @@ const REVISION_SCHEMA = {
       description:
         "UPDATE if the reply corrects the entry. DELETE if the user asks to remove/cancel the whole entry. NONE if the reply is not a correction (thanks, a question, chit-chat).",
     },
+    meal: {
+      type: Type.STRING,
+      enum: ["AUTO", ...MEALS],
+      description: "New meal type ONLY if the reply changes it (e.g. 'ini sarapan'). Otherwise AUTO.",
+    },
     ...COMMON_PROPERTIES,
   },
   required: ["action", "meal", "dayOffset", "items", "confidence", "notes"],
 };
+
+const MEAL_GUIDE = `MEAL TYPE — use what the user says if they name it (sarapan, makan siang, makan malam, camilan/snack). Otherwise infer it from the local time and the food:
+- Sarapan 04:00-10:30, Makan Siang 10:30-15:00, Makan Malam 17:00-22:00.
+- A full meal (rice or noodles with lauk, a main dish) outside those windows belongs to the nearest main meal, e.g. nasi + ayam at 16:30 is Makan Siang, at 23:00 Makan Malam.
+- Snacks, desserts, or drinks on their own are Camilan, at any time.`;
 
 const ESTIMATION_GUIDE = `You are a precise nutrition analyst for an Indonesian user's personal calorie tracker.
 
@@ -155,18 +166,32 @@ function normalize(result) {
   };
 }
 
+function previousEntryGuide(previous) {
+  return `The user's previous entry, logged at ${previous.time} as ${previous.meal}:
+${JSON.stringify(previous.items, null, 2)}
+
+Decide whether the new message adjusts that entry or logs new food:
+- CORRECT_PREVIOUS only if it clearly refers back to or adjusts that entry, e.g. "nasinya cuma 1", "tadi itu setengah porsi", "ayamnya 2 potong", "tambah kerupuk tadi", "bukan rendang tapi gulai", "itu makan siang". Then return the COMPLETE corrected item list for that entry (keep untouched items exactly, scale/remove/add/rename as the message says), and meal = ${previous.meal} unless the message changes it. If the user wants the whole entry removed, return items [].
+- If it describes other food or drink eaten, even shortly after, it is NEW: return only the new items. When in doubt, choose NEW.`;
+}
+
 /**
  * Estimates the nutrition of a meal from images (photos/screenshots) and/or a text description.
- * images: [{ data: base64, mimeType }]
+ * images: [{ data: base64, mimeType }]; time: local "HH:mm";
+ * previous: the user's latest entry { time, meal, items } — lets a text follow-up correct it.
  */
-export async function analyzeFood({ images = [], text = "" }) {
+export async function analyzeFood({ images = [], text = "", time, previous = null }) {
   const task = images.length
     ? `Analyze the food and drinks in the attached image${images.length > 1 ? "s (they belong to the same meal)" : ""}.`
-    : "The user describes in text what they ate or drank (no image). If it isn't about food or drink, set isFood false and items [].";
+    : "The user describes in text what they ate or drank (no image).";
   const prompt = `${ESTIMATION_GUIDE}
 
+${MEAL_GUIDE}
+
+Local time now: ${time}.
 ${task}
-If there is no food or drink at all, set isFood false and items [].
+If there is no food or drink at all, set intent NONE and items [].
+${previous ? `\n${previousEntryGuide(previous)}\n` : ""}
 ${text ? `User note:\n"""\n${text}\n"""` : ""}`;
 
   const parts = [...images.map((img) => ({ inlineData: img })), { text: prompt }];

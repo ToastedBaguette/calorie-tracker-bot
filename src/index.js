@@ -2,7 +2,16 @@ import { Client, Events, GatewayIntentBits, MessageFlags, Partials } from "disco
 import dotenv from "dotenv";
 import { analyzeFood, reviseFood } from "./gemini.js";
 import { appendEntries, deleteBatch, ensureReady, getTargets, readLog, replaceBatch, setTargets } from "./sheets.js";
-import { addDays, mealFromTime, nowParts, parseTargetCommand, sanitizeItem, sumNutrients } from "./nutrition.js";
+import {
+  MEALS,
+  addDays,
+  mealFromTime,
+  nowParts,
+  parseTargetCommand,
+  sanitizeItem,
+  snowflakeTime,
+  sumNutrients,
+} from "./nutrition.js";
 import {
   cancelledEmbed,
   dayEmbed,
@@ -31,6 +40,8 @@ const WEEK_COMMANDS = new Set(["minggu ini", "mingguan", "week", "7 hari"]);
 const MAX_IMAGES = 4;
 // Photos are downscaled through Discord's media proxy — plenty for Gemini, far less RAM on the host
 const MAX_IMAGE_SIDE = 1600;
+// A text message this soon after the latest entry may be a follow-up correction of it
+const FOLLOW_UP_WINDOW_MS = 3 * 60 * 60 * 1000;
 
 const client = new Client({
   intents: [
@@ -104,7 +115,74 @@ function findUndoId(message) {
 }
 
 /**
- * Photo(s) and/or text -> estimate -> append to Log -> reply with Undo button
+ * The bot's reply for an entry, if it is still among the channel's recent messages
+ */
+async function findEntryMessage(channel, batchId) {
+  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  return recent?.find((m) => m.author.id === client.user.id && findUndoId(m) === batchId) ?? null;
+}
+
+/**
+ * Rows of the latest entry (by Discord message time), if recent enough for a follow-up to correct it
+ */
+function latestRecentEntry(entries, now) {
+  let latestId = null;
+  let latestTime = 0;
+  for (const e of entries) {
+    const t = snowflakeTime(e.id);
+    if (t > latestTime) {
+      latestTime = t;
+      latestId = e.id;
+    }
+  }
+  if (!latestId || now - latestTime > FOLLOW_UP_WINDOW_MS) return null;
+  return entries.filter((e) => e.id === latestId);
+}
+
+/**
+ * Replaces a logged meal with corrected items — or deletes it when there are none — and updates
+ * its entry message. revision: { items, meal, dayOffset, confidence, notes }; meal "AUTO" keeps the old one.
+ */
+async function applyCorrection({ batchId, existing, revision, statusMsg, entryMsg }) {
+  const [first] = existing;
+
+  if (revision.items.length === 0) {
+    const deleted = await deleteBatch(batchId);
+    const embed = cancelledEmbed(deleted, await dayContext(first.date));
+    if (entryMsg) await entryMsg.edit({ embeds: [embed], components: [] });
+    await statusMsg.edit(entryMsg ? "↩️ Entri dihapus." : { content: "↩️ Entri dihapus.", embeds: [embed] });
+    console.log(`↩️ Deleted entry ${batchId} (${deleted.length} item(s)) by correction`);
+    return;
+  }
+
+  const updated = {
+    id: batchId,
+    date: revision.dayOffset ? addDays(nowParts().date, revision.dayOffset) : first.date,
+    time: first.time,
+    meal: MEALS.includes(revision.meal) ? revision.meal : first.meal,
+    source: first.source,
+    confidence: revision.confidence,
+  };
+  await replaceBatch(batchId, revision.items.map((item) => ({ ...updated, ...item })));
+
+  const ctx = await dayContext(updated.date);
+  const embed = entryEmbed({ ...updated, items: revision.items, notes: revision.notes }, ctx, "Dikoreksi");
+  const before = sumNutrients(existing).calories;
+  const after = sumNutrients(revision.items).calories;
+  const summary = `✏️ Koreksi disimpan: ${fmt(before)} → **${fmt(after)} kkal**.${remainingText(ctx)}`;
+
+  if (entryMsg) {
+    await entryMsg.edit({ embeds: [embed], components: [undoRow(batchId)] });
+    await statusMsg.edit(summary);
+  } else {
+    await statusMsg.edit({ content: summary, embeds: [embed], components: [undoRow(batchId)] });
+  }
+  console.log(`✏️ Corrected entry ${batchId}: ${before} -> ${after} kkal`);
+}
+
+/**
+ * Photo(s) and/or text -> estimate -> append to Log -> reply with Undo button.
+ * A text-only message may instead be a follow-up correcting the latest entry ("nasinya cuma 1").
  */
 async function handleFoodLog(message, images, text) {
   const statusMsg = await message.reply(
@@ -112,9 +190,31 @@ async function handleFoodLog(message, images, text) {
   );
 
   try {
-    const result = await analyzeFood({ images: await Promise.all(images.map(downloadImage)), text });
+    const { date: today, time } = nowParts(message.createdAt);
+    const previousRows = images.length
+      ? null
+      : latestRecentEntry((await readLog()).entries, message.createdTimestamp);
+    const previous = previousRows && {
+      time: previousRows[0].time,
+      meal: previousRows[0].meal,
+      items: previousRows.map(sanitizeItem),
+    };
 
-    if (!result.isFood || result.items.length === 0) {
+    const result = await analyzeFood({
+      images: await Promise.all(images.map(downloadImage)),
+      text,
+      time,
+      previous,
+    });
+
+    if (result.intent === "CORRECT_PREVIOUS" && previousRows) {
+      const batchId = previousRows[0].id;
+      const entryMsg = await findEntryMessage(message.channel, batchId);
+      await applyCorrection({ batchId, existing: previousRows, revision: result, statusMsg, entryMsg });
+      return;
+    }
+
+    if (result.intent === "NONE" || result.items.length === 0) {
       await statusMsg.edit(
         images.length
           ? "⚠️ Tidak ada makanan atau minuman yang terdeteksi. Coba foto yang lebih jelas atau tambahkan keterangan."
@@ -123,7 +223,6 @@ async function handleFoodLog(message, images, text) {
       return;
     }
 
-    const { date: today, time } = nowParts(message.createdAt);
     const entry = {
       id: message.id,
       date: addDays(today, result.dayOffset),
@@ -141,6 +240,9 @@ async function handleFoodLog(message, images, text) {
       embeds: [entryEmbed({ ...entry, items: result.items, notes: result.notes }, ctx)],
       components: [undoRow(entry.id)],
     });
+    console.log(
+      `🍽️ Logged ${entry.meal} (${entry.source}): ${result.items.length} item(s), ${sumNutrients(result.items).calories} kkal`
+    );
   } catch (err) {
     console.error("Food log error:", err);
     await statusMsg.edit(`❌ Gagal mencatat makanan: ${err.message}`);
@@ -168,8 +270,7 @@ async function handleCorrection(message, text) {
       return true;
     }
 
-    const [first] = existing;
-    const result = await reviseFood({ items: existing.map(sanitizeItem), meal: first.meal, correction: text });
+    const result = await reviseFood({ items: existing.map(sanitizeItem), meal: existing[0].meal, correction: text });
 
     if (result.action === "NONE") {
       await statusMsg.edit(
@@ -178,32 +279,8 @@ async function handleCorrection(message, text) {
       return true;
     }
 
-    if (result.action === "DELETE" || result.items.length === 0) {
-      const deleted = await deleteBatch(batchId);
-      await ref.edit({ embeds: [cancelledEmbed(deleted, await dayContext(first.date))], components: [] });
-      await statusMsg.edit("↩️ Entri dihapus.");
-      return true;
-    }
-
-    const updated = {
-      id: batchId,
-      date: result.dayOffset ? addDays(nowParts().date, result.dayOffset) : first.date,
-      time: first.time,
-      meal: result.meal === "AUTO" ? first.meal : result.meal,
-      source: first.source,
-      confidence: result.confidence,
-    };
-    await replaceBatch(batchId, result.items.map((item) => ({ ...updated, ...item })));
-
-    const ctx = await dayContext(updated.date);
-    await ref.edit({
-      embeds: [entryEmbed({ ...updated, items: result.items, notes: result.notes }, ctx, "Dikoreksi")],
-      components: [undoRow(batchId)],
-    });
-
-    const before = sumNutrients(existing).calories;
-    const after = sumNutrients(result.items).calories;
-    await statusMsg.edit(`✏️ Koreksi disimpan: ${fmt(before)} → **${fmt(after)} kkal**.${remainingText(ctx)}`);
+    const revision = result.action === "DELETE" ? { ...result, items: [] } : result;
+    await applyCorrection({ batchId, existing, revision, statusMsg, entryMsg: ref });
   } catch (err) {
     console.error("Correction error:", err);
     await statusMsg.edit(`❌ Gagal mengoreksi entri: ${err.message}`);
@@ -233,6 +310,7 @@ async function replyTargets(message, targets) {
   const updated = Object.keys(targets).length > 0;
   const result = updated ? await setTargets(targets) : await getTargets();
   await message.reply({ embeds: [targetEmbed(result, updated)] });
+  if (updated) console.log(`🎯 Targets updated: ${JSON.stringify(result)}`);
 }
 
 client.once(Events.ClientReady, (c) => {
@@ -309,9 +387,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   try {
     await interaction.deferUpdate();
-    const deleted = await deleteBatch(interaction.customId.slice("undo:".length));
+    const batchId = interaction.customId.slice("undo:".length);
+    const deleted = await deleteBatch(batchId);
     const ctx = await dayContext(deleted[0]?.date ?? nowParts().date);
     await interaction.editReply({ embeds: [cancelledEmbed(deleted, ctx)], components: [] });
+    console.log(`↩️ Undo entry ${batchId} (${deleted.length} item(s))`);
   } catch (err) {
     console.error("Undo error:", err);
     await interaction

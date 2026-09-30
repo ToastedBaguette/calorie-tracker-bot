@@ -39,17 +39,17 @@ const TARGET_ROWS = [
 ];
 
 // Per-day totals, computed live from the Log tab — for browsing in Google Sheets.
+// Whole-column range: a bounded one like B2:M gets shifted by row inserts and deletes.
 // QUERY types empty columns as text and sum() errors, hence IFERROR until the first row exists.
 const DAILY_FORMULA =
-  `=IFERROR(QUERY(${LOG}!B2:M, "select B, sum(G), sum(H), sum(I), sum(J), sum(K), sum(L), sum(M), count(E) ` +
+  `=IFERROR(QUERY(${LOG}!B:M, "select B, sum(G), sum(H), sum(I), sum(J), sum(K), sum(L), sum(M), count(E) ` +
   `where B is not null group by B order by B desc ` +
   `label B 'Tanggal', sum(G) 'Kalori (kkal)', sum(H) 'Protein (g)', sum(I) 'Karbo (g)', sum(J) 'Lemak (g)', ` +
-  `sum(K) 'Serat (g)', sum(L) 'Gula (g)', sum(M) 'Natrium (mg)', count(E) 'Item'", 0), "Belum ada data")`;
+  `sum(K) 'Serat (g)', sum(L) 'Gula (g)', sum(M) 'Natrium (mg)', count(E) 'Item'", 1), "Belum ada data")`;
 
 const INITIAL_CONTENT = {
   [LOG]: [LOG_HEADERS],
   [TARGET]: TARGET_ROWS,
-  [DAILY]: [[DAILY_FORMULA]],
 };
 
 let client = null;
@@ -127,16 +127,23 @@ async function setupSpreadsheet() {
     }
 
     await api.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
-    await api.spreadsheets.values.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data: missing.map((title) => ({ range: `'${title}'!A1`, values: INITIAL_CONTENT[title] })),
-      },
-    });
     console.log(`📗 Spreadsheet: created tab(s) ${missing.join(", ")}`);
     tabs = await getTabs();
   }
+
+  // Harian holds only the bot's formula, so it is rewritten on every start — formula fixes
+  // then reach existing spreadsheets too. Log and Target are only seeded when just created.
+  const seeds = missing.filter((title) => title !== DAILY);
+  await api.spreadsheets.values.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      valueInputOption: "USER_ENTERED",
+      data: [
+        ...seeds.map((title) => ({ range: `'${title}'!A1`, values: INITIAL_CONTENT[title] })),
+        { range: `'${DAILY}'!A1`, values: [[DAILY_FORMULA]] },
+      ],
+    },
+  });
 
   logSheetId = tabs.find((t) => t.title === LOG).sheetId;
 }
@@ -235,6 +242,7 @@ export async function readLog() {
 
 /**
  * Appends item rows. RAW keeps "2026-09-30" and Discord IDs as text instead of letting Sheets reinterpret them.
+ * OVERWRITE fills the empty rows below the table instead of inserting rows, which would shift references to Log.
  */
 export async function appendEntries(entries) {
   await ensureReady();
@@ -242,7 +250,7 @@ export async function appendEntries(entries) {
     spreadsheetId,
     range: `'${LOG}'!A1:O1`,
     valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
+    insertDataOption: "OVERWRITE",
     requestBody: { values: entries.map(toRow) },
   });
 }

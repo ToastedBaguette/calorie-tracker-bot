@@ -7,6 +7,7 @@ import {
   nowParts,
   parseTargetCommand,
   sanitizeItem,
+  snowflakeTime,
   sumNutrients,
 } from "../src/nutrition.js";
 
@@ -65,4 +66,10 @@ test("parseTargetCommand", () => {
   });
   assert.deepEqual(parseTargetCommand("target kalori 1900 p 110"), { calories: 1900, protein: 110 });
   assert.deepEqual(parseTargetCommand("target p0"), { protein: 0 });
+});
+
+test("snowflakeTime decodes Discord IDs", () => {
+  assert.equal(new Date(snowflakeTime("1554787275106426920")).toISOString().slice(0, 16), "2026-09-30T09:29");
+  assert.equal(snowflakeTime("TEST-A"), 0);
+  assert.equal(snowflakeTime(""), 0);
 });

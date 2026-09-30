@@ -13,9 +13,9 @@ same stack: Node.js, discord.js, `@google/genai`, Google Sheets API, Docker Comp
 |---|---|
 | 📸 **Photo → nutrition** | Send one or more photos. Each food/drink is listed separately with portion, kcal, protein, carbs, fat, fiber, sugar, sodium. Add a caption to steer it: `setengah porsi, tanpa nasi`. |
 | ⌨️ **Text logging** | `nasi padang rendang + es teh manis`, `sarapan 2 telur rebus`, `kemarin malam martabak 2 potong` |
-| 🍳 **Meal tagging** | Sarapan / Makan Siang / Camilan / Makan Malam — from your words, otherwise from the time (Asia/Jakarta). |
+| 🍳 **Meal tagging** | Sarapan / Makan Siang / Camilan / Makan Malam — from your words, otherwise from the time (Asia/Jakarta) and the food: nasi + ayam at 16:30 is a late Makan Siang, a kopi on its own is Camilan. |
 | 🎯 **Daily target** | `target 2000 p120 k250 l60` → every reply shows what's left for today. |
-| ↩️ **Undo & correct** | Every entry has a **Batalkan** button. Reply to an entry to fix it: `cuma setengah porsi`, `tambah kerupuk`, `ini sarapan`. |
+| ↩️ **Undo & correct** | Every entry has a **Batalkan** button. Fix the latest entry with a follow-up message (`nasinya cuma 1`, `tambah kerupuk tadi`, `itu makan siang`) or reply to any entry to fix that one. |
 | 📊 **Summaries** | `hari ini`, `kemarin`, `minggu ini` |
 
 Estimates are AI guesses from a picture — good for trends, not lab-grade.
@@ -26,6 +26,7 @@ Estimates are AI guesses from a picture — good for trends, not lab-grade.
 |---|---|
 | *(photo, optional caption)* | Analyze and log |
 | *(any food text)* | Analyze and log |
+| *(follow-up within 3 h)* | `nasinya cuma 1`, `tambah kerupuk tadi` — corrects the latest entry; other food is logged as new |
 | *(reply to an entry)* | Correct or delete that entry |
 | `hari ini` / `today` | Today's totals, progress, items per meal |
 | `kemarin` / `yesterday` | Yesterday's summary |
@@ -42,7 +43,7 @@ The bot creates these tabs on first start — no template to import. Use a blank
 |---|---|
 | `Log` | One row per food item: ID, Tanggal, Jam, Waktu Makan, Makanan, Porsi, Kalori, Protein, Karbo, Lemak, Serat, Gula, Natrium, Sumber, Keyakinan. Rows of one meal share an ID (the Discord message ID). |
 | `Target` | Daily targets (B2:B5), set with the `target` command or typed in directly. |
-| `Harian` | Per-day totals, computed live from `Log` with a `QUERY` formula. |
+| `Harian` | Per-day totals, computed live from `Log` with a `QUERY` formula (rewritten by the bot on every start). |
 
 You can edit or delete rows in `Log` by hand; summaries read the sheet every time.
 

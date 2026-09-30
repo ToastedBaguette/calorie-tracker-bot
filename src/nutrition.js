@@ -65,6 +65,14 @@ export function formatDateId(dateStr) {
 }
 
 /**
+ * Creation time (ms since epoch) encoded in a Discord ID; 0 for anything else
+ */
+export function snowflakeTime(id) {
+  if (!/^\d{15,20}$/.test(String(id))) return 0;
+  return Number((BigInt(id) >> 22n) + 1420070400000n);
+}
+
+/**
  * Meal type from the local clock when the user didn't say which meal it was
  */
 export function mealFromTime(time) {
