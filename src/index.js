@@ -14,6 +14,7 @@ import {
 } from "./nutrition.js";
 import {
   cancelledEmbed,
+  correctionChanges,
   dayEmbed,
   entryEmbed,
   fmt,
@@ -167,9 +168,11 @@ async function applyCorrection({ batchId, existing, revision, statusMsg, entryMs
 
   const ctx = await dayContext(updated.date);
   const embed = entryEmbed({ ...updated, items: revision.items, notes: revision.notes }, ctx, "Dikoreksi");
-  const before = sumNutrients(existing).calories;
-  const after = sumNutrients(revision.items).calories;
-  const summary = `✏️ Koreksi disimpan: ${fmt(before)} → **${fmt(after)} kkal**.${remainingText(ctx)}`;
+  const changes = correctionChanges(
+    { calories: sumNutrients(existing).calories, meal: first.meal, date: first.date },
+    { calories: sumNutrients(revision.items).calories, meal: updated.meal, date: updated.date }
+  );
+  const summary = `✏️ Koreksi disimpan: ${changes}.${remainingText(ctx)}`;
 
   if (entryMsg) {
     await entryMsg.edit({ embeds: [embed], components: [undoRow(batchId)] });
@@ -177,7 +180,7 @@ async function applyCorrection({ batchId, existing, revision, statusMsg, entryMs
   } else {
     await statusMsg.edit({ content: summary, embeds: [embed], components: [undoRow(batchId)] });
   }
-  console.log(`✏️ Corrected entry ${batchId}: ${before} -> ${after} kkal`);
+  console.log(`✏️ Corrected entry ${batchId}: ${changes.replaceAll("**", "")}`);
 }
 
 /**

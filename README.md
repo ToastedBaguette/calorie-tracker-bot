@@ -125,7 +125,7 @@ src/
   sheets.js     Google Sheets storage (tab setup, log, targets)
   nutrition.js  Pure helpers: time zone, meal inference, totals, target parsing
   embeds.js     Discord embeds (Indonesian)
-test/           node:test unit tests for nutrition.js
+test/           node:test unit tests (pure helpers, correction wording)
 ```
 
 ## License

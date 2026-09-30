@@ -65,6 +65,18 @@ export function dayProgress(totals, targets) {
   return lines.join("\n");
 }
 
+/**
+ * What a correction changed: "900 → **705 kkal**", "Camilan → **Makan Siang**", or both.
+ * before/after: { calories, meal, date }
+ */
+export function correctionChanges(before, after) {
+  const changes = [];
+  if (before.calories !== after.calories) changes.push(`${fmt(before.calories)} → **${fmt(after.calories)} kkal**`);
+  if (before.meal !== after.meal) changes.push(`${before.meal} → **${after.meal}**`);
+  if (before.date !== after.date) changes.push(`${formatDateId(before.date)} → **${formatDateId(after.date)}**`);
+  return changes.length ? changes.join(" · ") : `**${fmt(after.calories)} kkal**`;
+}
+
 function itemLine(item) {
   const portion = item.portion ? ` · ${item.portion}` : "";
   return `**${item.name}**${portion}\n╰ ${fmt(item.calories)} kkal · ${macroLine(item)}`;
