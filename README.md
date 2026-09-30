@@ -54,7 +54,7 @@ You can edit or delete rows in `Log` by hand; summaries read the sheet every tim
 2. **Bot** → **Reset Token** → copy it into `DISCORD_TOKEN`.
 3. **Bot** → enable **MESSAGE CONTENT INTENT**.
 4. **OAuth2 → URL Generator** → scope `bot`, permissions *View Channels, Send Messages, Embed Links,
-   Read Message History, Add Reactions* → open the URL and add the bot to your server.
+   Read Message History* → open the URL and add the bot to your server.
 5. Create a channel for it (e.g. `#kalori`). With Developer Mode on, right-click the channel → **Copy
    Channel ID** → `DISCORD_CHANNEL_ID`. Restricting the channel keeps it from answering in other
    bots' channels.

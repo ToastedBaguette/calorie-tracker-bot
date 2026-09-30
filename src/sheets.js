@@ -38,12 +38,13 @@ const TARGET_ROWS = [
   }),
 ];
 
-// Per-day totals, computed live from the Log tab — for browsing in Google Sheets
+// Per-day totals, computed live from the Log tab — for browsing in Google Sheets.
+// QUERY types empty columns as text and sum() errors, hence IFERROR until the first row exists.
 const DAILY_FORMULA =
-  `=QUERY(${LOG}!B2:M, "select B, sum(G), sum(H), sum(I), sum(J), sum(K), sum(L), sum(M), count(E) ` +
+  `=IFERROR(QUERY(${LOG}!B2:M, "select B, sum(G), sum(H), sum(I), sum(J), sum(K), sum(L), sum(M), count(E) ` +
   `where B is not null group by B order by B desc ` +
   `label B 'Tanggal', sum(G) 'Kalori (kkal)', sum(H) 'Protein (g)', sum(I) 'Karbo (g)', sum(J) 'Lemak (g)', ` +
-  `sum(K) 'Serat (g)', sum(L) 'Gula (g)', sum(M) 'Natrium (mg)', count(E) 'Item'", 0)`;
+  `sum(K) 'Serat (g)', sum(L) 'Gula (g)', sum(M) 'Natrium (mg)', count(E) 'Item'", 0), "Belum ada data")`;
 
 const INITIAL_CONTENT = {
   [LOG]: [LOG_HEADERS],
