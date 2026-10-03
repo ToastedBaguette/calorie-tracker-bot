@@ -17,6 +17,7 @@ same stack: Node.js, discord.js, `@google/genai`, Google Sheets API, Docker Comp
 | 🎯 **Daily target** | `target 2000 p120 k250 l60` → every reply shows what's left for today. |
 | ↩️ **Undo & correct** | Every entry has a **Batalkan** button. Fix the latest entry with a follow-up message (`nasinya cuma 1`, `tambah kerupuk tadi`, `itu makan siang`) or reply to any entry to fix that one. |
 | 📊 **Summaries** | `hari ini`, `kemarin`, `minggu ini` |
+| ⏰ **Daily reminder** | At 21:00 WIB, if nothing has been logged today, the bot pings the channel (and @-mentions `DISCORD_AUTHORIZED_USERS`). Change the time with `REMINDER_TIME`, or `off`. |
 
 Estimates are AI guesses from a picture — good for trends, not lab-grade.
 

@@ -5,6 +5,7 @@ import {
   formatDateId,
   mealFromTime,
   nowParts,
+  parseClockTime,
   parseTargetCommand,
   sanitizeItem,
   snowflakeTime,
@@ -66,6 +67,16 @@ test("parseTargetCommand", () => {
   });
   assert.deepEqual(parseTargetCommand("target kalori 1900 p 110"), { calories: 1900, protein: 110 });
   assert.deepEqual(parseTargetCommand("target p0"), { protein: 0 });
+});
+
+test("parseClockTime normalizes HH:mm and rejects the rest", () => {
+  assert.equal(parseClockTime("21:00"), "21:00");
+  assert.equal(parseClockTime(" 21.30 "), "21:30");
+  assert.equal(parseClockTime("9"), "09:00");
+  assert.equal(parseClockTime("off"), null);
+  assert.equal(parseClockTime(""), null);
+  assert.equal(parseClockTime("24:00"), null);
+  assert.equal(parseClockTime("21:60"), null);
 });
 
 test("snowflakeTime decodes Discord IDs", () => {

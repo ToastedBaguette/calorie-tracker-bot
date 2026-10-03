@@ -65,6 +65,18 @@ export function formatDateId(dateStr) {
 }
 
 /**
+ * "21:00" / "21.00" / "9" -> "21:00" / "09:00"; null for "off", "" or anything else
+ */
+export function parseClockTime(text) {
+  const match = String(text ?? "").trim().match(/^(\d{1,2})(?:[:.](\d{2}))?$/);
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2] ?? 0);
+  if (h > 23 || m > 59) return null;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/**
  * Creation time (ms since epoch) encoded in a Discord ID; 0 for anything else
  */
 export function snowflakeTime(id) {

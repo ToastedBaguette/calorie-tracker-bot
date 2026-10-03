@@ -7,6 +7,7 @@ import {
   addDays,
   mealFromTime,
   nowParts,
+  parseClockTime,
   parseTargetCommand,
   sanitizeItem,
   snowflakeTime,
@@ -43,6 +44,9 @@ const MAX_IMAGES = 4;
 const MAX_IMAGE_SIDE = 1600;
 // A text message this soon after the latest entry may be a follow-up correction of it
 const FOLLOW_UP_WINDOW_MS = 3 * 60 * 60 * 1000;
+// Daily nudge in the bot's channel when nothing is logged for today yet — "HH:mm" local time, "off" disables
+const reminderTime = parseClockTime(process.env.REMINDER_TIME ?? "21:00");
+const REMINDER_CHECK_MS = 60 * 1000;
 
 const client = new Client({
   intents: [
@@ -316,12 +320,53 @@ async function replyTargets(message, targets) {
   if (updated) console.log(`🎯 Targets updated: ${JSON.stringify(result)}`);
 }
 
+let lastReminderDate = null;
+
+/**
+ * Once a day, at or after the reminder time: if today has no Log rows, ping the channel.
+ * The day is only marked done after a successful check, so a Sheets/Discord hiccup is retried next minute.
+ * A bot (re)started after the reminder time still reminds that same evening.
+ */
+async function checkReminder() {
+  const { date, time } = nowParts();
+  if (time < reminderTime || lastReminderDate === date) return;
+
+  const { entries } = await readLog();
+  if (!entries.some((e) => e.date === date)) {
+    const channel = await client.channels.fetch(targetChannelId);
+    const mentions = authorizedUsers.map((id) => `<@${id}> `).join("");
+    await channel.send(
+      `${mentions}⏰ Belum ada makanan yang dicatat hari ini. ` +
+        "Kirim foto makananmu atau ketik misalnya `nasi goreng + es teh manis`."
+    );
+    console.log(`⏰ Sent reminder for ${date}`);
+  }
+  lastReminderDate = date;
+}
+
+function scheduleReminderCheck() {
+  setTimeout(async () => {
+    try {
+      await checkReminder();
+    } catch (err) {
+      console.error("Reminder error:", err);
+    }
+    scheduleReminderCheck();
+  }, REMINDER_CHECK_MS);
+}
+
 client.once(Events.ClientReady, (c) => {
   console.log("\n=======================================================");
   console.log(`🤖 Discord Calorie Bot online as: ${c.user.tag}`);
   console.log(`📡 Ready to receive food photos and meal messages!`);
   if (targetChannelId) {
     console.log(`🔒 Restricted to Channel ID: ${targetChannelId}`);
+  }
+  if (reminderTime && targetChannelId) {
+    console.log(`⏰ Daily reminder at ${reminderTime} if nothing is logged`);
+    scheduleReminderCheck();
+  } else if (reminderTime) {
+    console.log("⏰ Daily reminder off — set DISCORD_CHANNEL_ID to enable it");
   }
   console.log("=======================================================\n");
 });
