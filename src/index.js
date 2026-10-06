@@ -9,9 +9,11 @@ import {
   nowParts,
   parseClockTime,
   parseTargetCommand,
+  parseWeeklySchedule,
   sanitizeItem,
   snowflakeTime,
   sumNutrients,
+  weekday,
 } from "./nutrition.js";
 import {
   cancelledEmbed,
@@ -34,6 +36,8 @@ const authorizedUsers = (process.env.DISCORD_AUTHORIZED_USERS || "")
   .split(",")
   .map((u) => u.trim())
   .filter(Boolean);
+// Prefix for the bot's scheduled posts
+const mentions = authorizedUsers.map((id) => `<@${id}> `).join("");
 
 const HELP_COMMANDS = new Set(["bantuan", "help", "cara pakai"]);
 const TODAY_COMMANDS = new Set(["hari ini", "today", "ringkasan", "summary", "laporan"]);
@@ -47,7 +51,11 @@ const MAX_IMAGE_SIDE = 1600;
 const FOLLOW_UP_WINDOW_MS = 3 * 60 * 60 * 1000;
 // Daily nudge in the bot's channel when nothing is logged for today yet — "HH:mm" local time, "off" disables
 const reminderTime = parseClockTime(process.env.REMINDER_TIME ?? "21:00");
-const REMINDER_CHECK_MS = 60 * 1000;
+// Weekly recap of the 7 days up to yesterday — "<day> HH:mm" local time, "off" disables
+const weeklyRecap = parseWeeklySchedule(process.env.WEEKLY_RECAP ?? "minggu 05:00");
+const RECAP_TITLE = "📅 Rekap Mingguan";
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const JOB_CHECK_MS = 60 * 1000;
 
 const client = new Client({
   intents: [
@@ -379,15 +387,20 @@ async function replyDay(message, offset) {
   await message.reply({ embeds: [dayEmbed({ date, entries: entries.filter((e) => e.date === date), targets, today })] });
 }
 
-async function replyWeek(message) {
-  const today = nowParts().date;
-  const { entries, targets } = await readLog();
-  const days = Array.from({ length: 7 }, (_, i) => {
-    const date = addDays(today, i - 6);
+/**
+ * Per-day totals for the 7 days ending on `end`, oldest first
+ */
+function weekDays(entries, end) {
+  return Array.from({ length: 7 }, (_, i) => {
+    const date = addDays(end, i - 6);
     const dayEntries = entries.filter((e) => e.date === date);
     return { date, count: dayEntries.length, totals: sumNutrients(dayEntries) };
   });
-  await message.reply({ embeds: [weekEmbed({ days, targets })] });
+}
+
+async function replyWeek(message) {
+  const { entries, targets } = await readLog();
+  await message.reply({ embeds: [weekEmbed({ days: weekDays(entries, nowParts().date), targets })] });
 }
 
 async function replyTargets(message, targets) {
@@ -397,39 +410,69 @@ async function replyTargets(message, targets) {
   if (updated) console.log(`🎯 Targets updated: ${JSON.stringify(result)}`);
 }
 
-let lastReminderDate = null;
-
 /**
- * Once a day, at or after the reminder time: if today has no Log rows, ping the channel.
- * The day is only marked done after a successful check, so a Sheets/Discord hiccup is retried next minute.
- * A bot (re)started after the reminder time still reminds that same evening.
+ * Reminder: if today has no Log rows, ping the channel
  */
-async function checkReminder() {
-  const { date, time } = nowParts();
-  if (time < reminderTime || lastReminderDate === date) return;
-
+async function checkReminder(date) {
   const { entries } = await readLog();
   if (!entries.some((e) => e.date === date)) {
     const channel = await client.channels.fetch(targetChannelId);
-    const mentions = authorizedUsers.map((id) => `<@${id}> `).join("");
     await channel.send(
       `${mentions}⏰ Belum ada makanan yang dicatat hari ini. ` +
         "Kirim foto makananmu atau ketik misalnya `nasi goreng + es teh manis`."
     );
     console.log(`⏰ Sent reminder for ${date}`);
   }
-  lastReminderDate = date;
 }
 
-function scheduleReminderCheck() {
+/**
+ * Weekly recap: the 7 days up to yesterday, compared with the 7 before
+ */
+async function sendWeeklyRecap(date) {
+  const channel = await client.channels.fetch(targetChannelId);
+  // A restart later on the recap day would post it again — unless it's already in the channel
+  const recent = await channel.messages.fetch({ limit: 100 });
+  const posted = recent.some(
+    (m) =>
+      m.author.id === client.user.id &&
+      nowParts(m.createdAt).date === date &&
+      m.embeds[0]?.title?.startsWith(RECAP_TITLE)
+  );
+  if (posted) return;
+
+  const { entries, targets } = await readLog();
+  const end = addDays(date, -1);
+  const embed = weekEmbed({
+    days: weekDays(entries, end),
+    previous: weekDays(entries, addDays(end, -7)),
+    targets,
+    title: RECAP_TITLE,
+  });
+  await channel.send({ content: `${mentions}📅 Ini rekap makanmu seminggu terakhir.`, embeds: [embed] });
+  console.log(`📅 Sent weekly recap for ${addDays(end, -6)} to ${end}`);
+}
+
+/**
+ * Scheduled posts in the bot's channel, checked once a minute. Each runs at most once a day, at or
+ * after its time. A day is only marked done after a successful run, so a Sheets/Discord hiccup is
+ * retried next minute, and a bot (re)started after the time still runs it that day.
+ */
+const jobs = [];
+
+function scheduleJobs() {
   setTimeout(async () => {
-    try {
-      await checkReminder();
-    } catch (err) {
-      console.error("Reminder error:", err);
+    const { date, time } = nowParts();
+    for (const job of jobs) {
+      if (job.doneDate === date || !job.isDue(date, time)) continue;
+      try {
+        await job.run(date);
+        job.doneDate = date;
+      } catch (err) {
+        console.error(`${job.name} error:`, err);
+      }
     }
-    scheduleReminderCheck();
-  }, REMINDER_CHECK_MS);
+    scheduleJobs();
+  }, JOB_CHECK_MS);
 }
 
 client.once(Events.ClientReady, (c) => {
@@ -438,12 +481,21 @@ client.once(Events.ClientReady, (c) => {
   console.log(`📡 Ready to receive food photos and meal messages!`);
   if (targetChannelId) {
     console.log(`🔒 Restricted to Channel ID: ${targetChannelId}`);
-  }
-  if (reminderTime && targetChannelId) {
-    console.log(`⏰ Daily reminder at ${reminderTime} if nothing is logged`);
-    scheduleReminderCheck();
-  } else if (reminderTime) {
-    console.log("⏰ Daily reminder off — set DISCORD_CHANNEL_ID to enable it");
+    if (reminderTime) {
+      console.log(`⏰ Daily reminder at ${reminderTime} if nothing is logged`);
+      jobs.push({ name: "Reminder", isDue: (date, time) => time >= reminderTime, run: checkReminder });
+    }
+    if (weeklyRecap) {
+      console.log(`📅 Weekly recap every ${DAY_NAMES[weeklyRecap.day]} at ${weeklyRecap.time}`);
+      jobs.push({
+        name: "Weekly recap",
+        isDue: (date, time) => weekday(date) === weeklyRecap.day && time >= weeklyRecap.time,
+        run: sendWeeklyRecap,
+      });
+    }
+    if (jobs.length > 0) scheduleJobs();
+  } else if (reminderTime || weeklyRecap) {
+    console.log("⏰ Daily reminder and weekly recap off — set DISCORD_CHANNEL_ID to enable them");
   }
   console.log("=======================================================\n");
 });

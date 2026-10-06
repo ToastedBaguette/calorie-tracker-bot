@@ -14,10 +14,11 @@ same stack: Node.js, discord.js, `@google/genai`, Google Sheets API, Docker Comp
 | 📸 **Photo → nutrition** | Send one or more photos. Each food/drink is listed separately with portion, kcal, protein, carbs, fat, fiber, sugar, sodium. Add a caption to steer it: `setengah porsi, tanpa nasi`. |
 | ⌨️ **Text logging** | `nasi padang rendang + es teh manis`, `sarapan 2 telur rebus`, `kemarin malam martabak 2 potong` |
 | 🍳 **Meal tagging** | Sarapan / Makan Siang / Camilan / Makan Malam — from your words, otherwise from the time (Asia/Jakarta) and the food: nasi + ayam at 16:30 is a late Makan Siang, a kopi on its own is Camilan. |
-| 🎯 **Daily target** | `target 2000 p120 k250 l60` → every reply shows what's left for today. |
+| 🎯 **Daily target** | `target 2000 p120 k250 l60` → every reply shows what's left for today. Fiber, sugar and sodium too: `target serat30 gula50 natrium2000` — fiber is a goal (✅ once reached), sugar and sodium are limits (⚠️ when over). |
 | ↩️ **Undo & correct** | Every entry has a **Batalkan** button. Fix the latest entry with a follow-up message (`nasinya cuma 1`, `tambah kerupuk tadi`, `itu makan siang`) or reply to any entry to fix that one. A correction reply has a **Kembalikan** button that restores the entry as it was — handy when a new item was mistaken for a correction. It works for an entry's latest correction, until the bot restarts. |
 | 📊 **Summaries** | `hari ini`, `kemarin`, `minggu ini` |
 | ⏰ **Daily reminder** | At 21:00 WIB, if nothing has been logged today, the bot pings the channel (and @-mentions `DISCORD_AUTHORIZED_USERS`). Change the time with `REMINDER_TIME`, or `off`. |
+| 📅 **Weekly recap** | Every Sunday at 05:00 WIB the bot posts the 7 days up to Saturday — daily chart, averages, days over target or limits, and a comparison with the week before — and @-mentions `DISCORD_AUTHORIZED_USERS`. Change it with `WEEKLY_RECAP` (`minggu 05:00`), or `off`. |
 
 Estimates are AI guesses from a picture — good for trends, not lab-grade.
 
@@ -34,6 +35,7 @@ Estimates are AI guesses from a picture — good for trends, not lab-grade.
 | `minggu ini` / `week` | Last 7 days, daily chart, averages |
 | `target` | Show daily targets |
 | `target 2000 p120 k250 l60` | Set kcal / protein / carbs / fat targets (`target p0` clears one) |
+| `target serat30 gula50 natrium2000` | Set the fiber goal and the sugar / sodium limits (`target gula0` clears one) |
 | `bantuan` / `help` | Usage guide |
 
 ## Google Sheet layout
@@ -43,7 +45,7 @@ The bot creates these tabs on first start — no template to import. Use a blank
 | Tab | Content |
 |---|---|
 | `Log` | One row per food item: ID, Tanggal, Jam, Waktu Makan, Makanan, Porsi, Kalori, Protein, Karbo, Lemak, Serat, Gula, Natrium, Sumber, Keyakinan. Rows of one meal share an ID (the Discord message ID). |
-| `Target` | Daily targets (B2:B5), set with the `target` command or typed in directly. |
+| `Target` | Daily targets in B2:B8 — kcal, protein, carbs, fat, fiber, sugar, sodium — set with the `target` command or typed in directly. The labels in column A are rewritten on every start. |
 | `Harian` | Per-day totals, computed live from `Log` with a `QUERY` formula (rewritten by the bot on every start). |
 
 You can edit or delete rows in `Log` by hand; summaries read the sheet every time.

@@ -7,18 +7,21 @@ export const TIMEZONE = process.env.TZ || "Asia/Jakarta";
 
 export const MEALS = ["Sarapan", "Makan Siang", "Camilan", "Makan Malam"];
 
+// goal: "min" is reached by eating at least the target, "max" is a limit not to exceed
 export const NUTRIENTS = [
   { key: "calories", label: "Kalori", unit: "kkal", digits: 0 },
   { key: "protein", label: "Protein", unit: "g", digits: 1 },
   { key: "carbs", label: "Karbo", unit: "g", digits: 1 },
   { key: "fat", label: "Lemak", unit: "g", digits: 1 },
-  { key: "fiber", label: "Serat", unit: "g", digits: 1 },
-  { key: "sugar", label: "Gula", unit: "g", digits: 1 },
-  { key: "sodium", label: "Natrium", unit: "mg", digits: 0 },
+  { key: "fiber", label: "Serat", unit: "g", digits: 1, goal: "min" },
+  { key: "sugar", label: "Gula", unit: "g", digits: 1, goal: "max" },
+  { key: "sodium", label: "Natrium", unit: "mg", digits: 0, goal: "max" },
 ];
 
-// Daily targets the user can set — a subset of NUTRIENTS
-export const TARGET_KEYS = ["calories", "protein", "carbs", "fat"];
+// Daily targets the user can set — a subset of NUTRIENTS, stored in this order in Target!B2:B8,
+// so new keys only ever go at the end
+export const TARGET_KEYS = ["calories", "protein", "carbs", "fat", "fiber", "sugar", "sodium"];
+export const EXTRA_KEYS = ["fiber", "sugar", "sodium"];
 
 function round(value, digits) {
   const f = 10 ** digits;
@@ -62,6 +65,33 @@ export function formatDateId(dateStr) {
   const weekday = new Intl.DateTimeFormat("id-ID", { weekday: "short", timeZone: "UTC" }).format(d);
   const dayMonth = new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", timeZone: "UTC" }).format(d);
   return `${weekday}, ${dayMonth}`;
+}
+
+/**
+ * 0 (Sunday) … 6 (Saturday) for a "YYYY-MM-DD" date
+ */
+export function weekday(dateStr) {
+  return new Date(`${dateStr}T00:00:00Z`).getUTCDay();
+}
+
+const WEEKDAYS = {
+  minggu: 0, sun: 0, sunday: 0,
+  senin: 1, mon: 1, monday: 1,
+  selasa: 2, tue: 2, tuesday: 2,
+  rabu: 3, wed: 3, wednesday: 3,
+  kamis: 4, thu: 4, thursday: 4,
+  jumat: 5, fri: 5, friday: 5,
+  sabtu: 6, sat: 6, saturday: 6,
+};
+
+/**
+ * "minggu 05:00" / "Sun 5" -> { day: 0, time: "05:00" }; null for "off" or anything else
+ */
+export function parseWeeklySchedule(text) {
+  const match = String(text ?? "").trim().toLowerCase().match(/^(\S+)\s+(\S+)$/);
+  if (!match || !Object.hasOwn(WEEKDAYS, match[1])) return null;
+  const time = parseClockTime(match[2]);
+  return time && { day: WEEKDAYS[match[1]], time };
 }
 
 /**
@@ -140,6 +170,12 @@ const TARGET_LABELS = {
   kkal: "calories",
   kcal: "calories",
   cal: "calories",
+  serat: "fiber",
+  fiber: "fiber",
+  gula: "sugar",
+  sugar: "sugar",
+  natrium: "sodium",
+  sodium: "sodium",
 };
 
 /**

@@ -7,9 +7,11 @@ import {
   nowParts,
   parseClockTime,
   parseTargetCommand,
+  parseWeeklySchedule,
   sanitizeItem,
   snowflakeTime,
   sumNutrients,
+  weekday,
 } from "../src/nutrition.js";
 
 test("nowParts converts to Asia/Jakarta (UTC+7)", () => {
@@ -83,4 +85,26 @@ test("snowflakeTime decodes Discord IDs", () => {
   assert.equal(new Date(snowflakeTime("1554787275106426920")).toISOString().slice(0, 16), "2026-09-30T09:29");
   assert.equal(snowflakeTime("TEST-A"), 0);
   assert.equal(snowflakeTime(""), 0);
+});
+
+test("parseTargetCommand reads fiber, sugar and sodium", () => {
+  assert.deepEqual(parseTargetCommand("target serat30 gula 50 natrium 2.000"), { fiber: 30, sugar: 50, sodium: 2000 });
+  assert.deepEqual(parseTargetCommand("goal fiber 25 sugar: 40 sodium=1500 f60"), { fiber: 25, sugar: 40, sodium: 1500, fat: 60 });
+  assert.deepEqual(parseTargetCommand("target gula0"), { sugar: 0 });
+});
+
+test("weekday counts from Sunday", () => {
+  assert.equal(weekday("2026-10-11"), 0);
+  assert.equal(weekday("2026-10-06"), 2);
+  assert.equal(weekday("2026-10-10"), 6);
+});
+
+test("parseWeeklySchedule takes a day and a time", () => {
+  assert.deepEqual(parseWeeklySchedule("minggu 05:00"), { day: 0, time: "05:00" });
+  assert.deepEqual(parseWeeklySchedule(" Sun 5 "), { day: 0, time: "05:00" });
+  assert.deepEqual(parseWeeklySchedule("jumat 18.30"), { day: 5, time: "18:30" });
+  assert.equal(parseWeeklySchedule("off"), null);
+  assert.equal(parseWeeklySchedule(""), null);
+  assert.equal(parseWeeklySchedule("minggu 25:00"), null);
+  assert.equal(parseWeeklySchedule("constructor 05:00"), null);
 });

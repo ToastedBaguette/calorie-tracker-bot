@@ -30,11 +30,13 @@ const LOG_RANGE = `'${LOG}'!A2:O`;
 const NUTRIENT_COL = 6;
 
 const TARGET_RANGE = `'${TARGET}'!B2:B${TARGET_KEYS.length + 1}`;
-const TARGET_ROWS = [
+// Header + one label per target in column A. Label rows have no second cell, so writing them
+// leaves the values in column B as they are.
+const TARGET_LABEL_ROWS = [
   ["Target Harian", "Nilai"],
   ...TARGET_KEYS.map((key) => {
     const n = NUTRIENTS.find((x) => x.key === key);
-    return [`${n.label} (${n.unit})`, ""];
+    return [`${n.label}${n.goal ? ` ${n.goal === "max" ? "maks" : "min"}` : ""} (${n.unit})`];
   }),
 ];
 
@@ -46,11 +48,6 @@ const DAILY_FORMULA =
   `where B is not null group by B order by B desc ` +
   `label B 'Tanggal', sum(G) 'Kalori (kkal)', sum(H) 'Protein (g)', sum(I) 'Karbo (g)', sum(J) 'Lemak (g)', ` +
   `sum(K) 'Serat (g)', sum(L) 'Gula (g)', sum(M) 'Natrium (mg)', count(E) 'Item'", 1), "Belum ada data")`;
-
-const INITIAL_CONTENT = {
-  [LOG]: [LOG_HEADERS],
-  [TARGET]: TARGET_ROWS,
-};
 
 let client = null;
 let logSheetId = null;
@@ -98,7 +95,7 @@ async function getTabs() {
 
 /**
  * Creates the Log / Target / Harian tabs on first run so no template import is needed.
- * Existing tabs are never overwritten.
+ * Logged data and target values are never overwritten — only Harian's formula and Target's labels.
  */
 async function setupSpreadsheet() {
   if (!spreadsheetId) throw new Error("SPREADSHEET_ID is not set in .env");
@@ -141,15 +138,16 @@ async function setupSpreadsheet() {
     tabs = await getTabs();
   }
 
-  // Harian holds only the bot's formula, so it is rewritten on every start — formula fixes
-  // then reach existing spreadsheets too. Log and Target are only seeded when just created.
-  const seeds = missing.filter((title) => title !== DAILY);
+  // Harian holds only the bot's formula and Target's column A only its labels, so both are rewritten
+  // on every start — formula fixes and new targets then reach existing spreadsheets too.
+  // Log's header is only seeded when the tab is just created.
   await api.spreadsheets.values.batchUpdate({
     spreadsheetId,
     requestBody: {
       valueInputOption: "USER_ENTERED",
       data: [
-        ...seeds.map((title) => ({ range: `'${title}'!A1`, values: INITIAL_CONTENT[title] })),
+        ...(missing.includes(LOG) ? [{ range: `'${LOG}'!A1`, values: [LOG_HEADERS] }] : []),
+        { range: `'${TARGET}'!A1`, values: TARGET_LABEL_ROWS },
         { range: `'${DAILY}'!A1`, values: [[DAILY_FORMULA]] },
       ],
     },

@@ -1,5 +1,5 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
-import { MEALS, NUTRIENTS, TARGET_KEYS, addDays, formatDateId, sumNutrients } from "./nutrition.js";
+import { EXTRA_KEYS, MEALS, NUTRIENTS, TARGET_KEYS, addDays, formatDateId, sumNutrients } from "./nutrition.js";
 
 const COLORS = {
   ok: 0x2ecc71,
@@ -40,7 +40,33 @@ function dayLabel(date, today) {
 }
 
 /**
- * Calorie progress against the target plus macro totals, e.g. for the "Hari Ini" field
+ * "⚠️" over a limit (sugar, sodium), "✅" a goal reached (fiber), "" otherwise or without a target
+ */
+function goalMark(key, value, target) {
+  const { goal } = NUTRIENTS.find((n) => n.key === key);
+  if (!target) return "";
+  if (goal === "max" && value > target) return "⚠️";
+  if (goal === "min" && value >= target) return "✅";
+  return "";
+}
+
+/**
+ * "Protein 80/120 g", "Gula 62/50 g ⚠️", or just "Serat 12 g" without a target
+ */
+function nutrientProgress(key, totals, targets) {
+  const { label, unit } = NUTRIENTS.find((n) => n.key === key);
+  if (!targets[key]) return `${label} ${fmt(totals[key])} ${unit}`;
+  const mark = goalMark(key, totals[key], targets[key]);
+  return `${label} ${fmt(totals[key])}/${fmt(targets[key])} ${unit}${mark ? ` ${mark}` : ""}`;
+}
+
+function hasExtraTargets(targets) {
+  return EXTRA_KEYS.some((key) => targets[key]);
+}
+
+/**
+ * Calorie progress against the target plus macro totals, e.g. for the "Hari Ini" field.
+ * Fiber, sugar and sodium join in once one of them has a target.
  */
 export function dayProgress(totals, targets) {
   const lines = [];
@@ -55,13 +81,10 @@ export function dayProgress(totals, targets) {
     lines.push(`**${fmt(totals.calories)} kkal** · atur target: \`target 2000\``);
   }
 
-  const macros = ["protein", "carbs", "fat"].map((key) => {
-    const { label } = NUTRIENTS.find((n) => n.key === key);
-    return targets[key]
-      ? `${label} ${fmt(totals[key])}/${fmt(targets[key])} g`
-      : `${label} ${fmt(totals[key])} g`;
-  });
-  lines.push(macros.join(" · "));
+  lines.push(["protein", "carbs", "fat"].map((key) => nutrientProgress(key, totals, targets)).join(" · "));
+  if (hasExtraTargets(targets)) {
+    lines.push(EXTRA_KEYS.map((key) => nutrientProgress(key, totals, targets)).join(" · "));
+  }
   return lines.join("\n");
 }
 
@@ -173,20 +196,41 @@ export function dayEmbed({ date, entries, targets, today }) {
     });
   }
 
-  embed.addFields({ name: "Lainnya", value: extrasLine(totals) });
+  // With an extras target, the progress above already shows them
+  if (!hasExtraTargets(targets)) embed.addFields({ name: "Lainnya", value: extrasLine(totals) });
   return embed;
 }
 
 /**
- * Last-7-days overview. days: [{ date, count, totals }] oldest first.
+ * The logged days and their per-day average of every nutrient. days: [{ date, count, totals }]
  */
-export function weekEmbed({ days, targets }) {
+function dailyAverage(days) {
+  const logged = days.filter((d) => d.count > 0);
+  const sum = sumNutrients(logged.map((d) => d.totals));
+  const avg = Object.fromEntries(Object.entries(sum).map(([k, v]) => [k, Math.round(v / (logged.length || 1))]));
+  return { logged, avg };
+}
+
+/**
+ * "1.850 → **1.720** kkal/hari (↓130)"
+ */
+function change(before, after, unit) {
+  const diff = after - before;
+  const delta = diff === 0 ? "sama" : `${diff > 0 ? "↑" : "↓"}${fmt(Math.abs(diff))}`;
+  return `${fmt(before)} → **${fmt(after)}** ${unit} (${delta})`;
+}
+
+/**
+ * Seven-day overview. days: [{ date, count, totals }] oldest first; previous: the 7 days before,
+ * for a comparison (the weekly recap).
+ */
+export function weekEmbed({ days, targets, title = "📅 7 Hari Terakhir", previous = null }) {
   const embed = new EmbedBuilder()
     .setColor(COLORS.info)
-    .setTitle(`📅 7 Hari Terakhir — ${formatDateId(days[0].date)} s/d ${formatDateId(days.at(-1).date)}`)
+    .setTitle(`${title} — ${formatDateId(days[0].date)} s/d ${formatDateId(days.at(-1).date)}`)
     .setTimestamp();
 
-  const logged = days.filter((d) => d.count > 0);
+  const { logged, avg } = dailyAverage(days);
   if (logged.length === 0) {
     return embed.setDescription("Belum ada makanan yang dicatat dalam 7 hari terakhir.");
   }
@@ -201,28 +245,43 @@ export function weekEmbed({ days, targets }) {
   });
   embed.setDescription(`\`\`\`\n${lines.join("\n")}\n\`\`\``);
 
-  const sum = sumNutrients(logged.map((d) => d.totals));
-  const avg = Object.fromEntries(Object.entries(sum).map(([k, v]) => [k, Math.round(v / logged.length)]));
   let average = `**${fmt(avg.calories)} kkal/hari**\n${macroLine(avg)}`;
   if (targets.calories) {
     const overDays = logged.filter((d) => d.totals.calories > targets.calories).length;
     average += `\nTarget ${fmt(targets.calories)} kkal · ${overDays} hari di atas target`;
   }
+  const extras = EXTRA_KEYS.filter((key) => targets[key]).map((key) => {
+    const { label, goal } = NUTRIENTS.find((n) => n.key === key);
+    const marked = logged.filter((d) => goalMark(key, d.totals[key], targets[key])).length;
+    return goal === "max" ? `${label} di atas batas ${marked} hari` : `${label} tercapai ${marked} hari`;
+  });
+  if (extras.length > 0) average += `\n${extras.join(" · ")}`;
   embed.addFields({ name: `Rata-rata (${logged.length} hari tercatat)`, value: average });
+
+  const before = previous && dailyAverage(previous);
+  if (before?.logged.length > 0) {
+    embed.addFields({
+      name: `Dibanding 7 hari sebelumnya (${before.logged.length} hari tercatat)`,
+      value:
+        `Kalori ${change(before.avg.calories, avg.calories, "kkal/hari")}\n` +
+        `Protein ${change(before.avg.protein, avg.protein, "g/hari")}`,
+    });
+  }
   return embed;
 }
 
 export function targetEmbed(targets, updated) {
   const lines = TARGET_KEYS.map((key) => {
-    const { label, unit } = NUTRIENTS.find((n) => n.key === key);
-    return `• **${label}**: ${targets[key] ? `${fmt(targets[key])} ${unit}` : "*belum diatur*"}`;
+    const { label, unit, goal } = NUTRIENTS.find((n) => n.key === key);
+    const name = goal ? `**${label}** (${goal === "max" ? "maks" : "min"})` : `**${label}**`;
+    return `• ${name}: ${targets[key] ? `${fmt(targets[key])} ${unit}` : "*belum diatur*"}`;
   });
 
   return new EmbedBuilder()
     .setColor(COLORS.info)
     .setTitle(updated ? "🎯 Target Harian Diperbarui" : "🎯 Target Harian")
     .setDescription(lines.join("\n"))
-    .setFooter({ text: "Ubah: target 2000 p120 k250 l60 · hapus satu: target p0" });
+    .setFooter({ text: "Ubah: target 2000 p120 k250 l60 serat30 gula50 natrium2000 · hapus satu: target p0" });
 }
 
 export function helpEmbed() {
@@ -237,6 +296,7 @@ export function helpEmbed() {
         "Koreksi keliru? Tekan ⏪ Kembalikan\n" +
         "• **Batalkan:** tekan tombol ↩️ Batalkan\n" +
         "• **Ringkasan:** `hari ini`, `kemarin`, `minggu ini`\n" +
-        "• **Target:** `target 2000 p120 k250 l60` (kalori, protein, karbo, lemak) · `target` untuk melihat"
+        "• **Target:** `target 2000 p120 k250 l60` (kalori, protein, karbo, lemak), " +
+        "`target serat30 gula50 natrium2000` (serat minimal, gula & natrium maksimal) · `target` untuk melihat"
     );
 }
