@@ -20,6 +20,7 @@ import {
   entryEmbed,
   fmt,
   helpEmbed,
+  revertRow,
   targetEmbed,
   undoRow,
   weekEmbed,
@@ -145,17 +146,37 @@ function latestRecentEntry(entries, now) {
 }
 
 /**
+ * The latest correction of each entry, so its Kembalikan button can undo it:
+ * batchId -> { statusMsgId, entryMsgId, rows (before the correction), deleted }.
+ * In memory only — after a restart the button just says it's too late.
+ */
+const corrections = new Map();
+const MAX_CORRECTIONS = 100;
+
+function rememberCorrection(batchId, correction) {
+  corrections.delete(batchId); // re-insert so the Map stays oldest-first
+  corrections.set(batchId, correction);
+  if (corrections.size > MAX_CORRECTIONS) corrections.delete(corrections.keys().next().value);
+}
+
+/**
  * Replaces a logged meal with corrected items — or deletes it when there are none — and updates
  * its entry message. revision: { items, meal, dayOffset, confidence, notes }; meal "AUTO" keeps the old one.
  */
 async function applyCorrection({ batchId, existing, revision, statusMsg, entryMsg }) {
   const [first] = existing;
+  const messages = { statusMsgId: statusMsg.id, entryMsgId: entryMsg?.id ?? null };
 
   if (revision.items.length === 0) {
     const deleted = await deleteBatch(batchId);
+    if (deleted.length > 0) rememberCorrection(batchId, { ...messages, rows: deleted, deleted: true });
     const embed = cancelledEmbed(deleted, await dayContext(first.date));
     if (entryMsg) await entryMsg.edit({ embeds: [embed], components: [] });
-    await statusMsg.edit(entryMsg ? "↩️ Entri dihapus." : { content: "↩️ Entri dihapus.", embeds: [embed] });
+    await statusMsg.edit({
+      content: "↩️ Entri dihapus.",
+      embeds: entryMsg ? [] : [embed],
+      components: deleted.length > 0 ? [revertRow(batchId)] : [],
+    });
     console.log(`↩️ Deleted entry ${batchId} (${deleted.length} item(s)) by correction`);
     return;
   }
@@ -168,7 +189,8 @@ async function applyCorrection({ batchId, existing, revision, statusMsg, entryMs
     source: first.source,
     confidence: revision.confidence,
   };
-  await replaceBatch(batchId, revision.items.map((item) => ({ ...updated, ...item })));
+  const replaced = await replaceBatch(batchId, revision.items.map((item) => ({ ...updated, ...item })));
+  rememberCorrection(batchId, { ...messages, rows: replaced, deleted: false });
 
   const ctx = await dayContext(updated.date);
   const embed = entryEmbed({ ...updated, items: revision.items, notes: revision.notes }, ctx, "Dikoreksi");
@@ -180,11 +202,66 @@ async function applyCorrection({ batchId, existing, revision, statusMsg, entryMs
 
   if (entryMsg) {
     await entryMsg.edit({ embeds: [embed], components: [undoRow(batchId)] });
-    await statusMsg.edit(summary);
+    await statusMsg.edit({ content: summary, components: [revertRow(batchId)] });
   } else {
-    await statusMsg.edit({ content: summary, embeds: [embed], components: [undoRow(batchId)] });
+    await statusMsg.edit({ content: summary, embeds: [embed], components: [revertRow(batchId, true)] });
   }
   console.log(`✏️ Corrected entry ${batchId}: ${changes.replaceAll("**", "")}`);
+}
+
+/**
+ * Kembalikan: puts an entry back as it was before its latest correction
+ */
+async function handleRevert(interaction, batchId) {
+  const saved = corrections.get(batchId);
+  if (saved?.statusMsgId !== interaction.message.id) {
+    await interaction.editReply({ components: findUndoId(interaction.message) ? [undoRow(batchId)] : [] });
+    await interaction.followUp({
+      content: "⚠️ Koreksi ini tidak bisa dikembalikan lagi — sudah ada koreksi yang lebih baru, atau bot sempat dimulai ulang.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  // Taken before any await, so a double-click can't restore it twice
+  corrections.delete(batchId);
+
+  const { rows } = saved;
+  try {
+    if (saved.deleted) await appendEntries(rows);
+    else await replaceBatch(batchId, rows);
+  } catch (err) {
+    if (!corrections.has(batchId)) corrections.set(batchId, saved); // a later click can retry
+    throw err;
+  }
+
+  const ctx = await dayContext(rows[0].date);
+  const embed = entryEmbed({ ...rows[0], items: rows, notes: "" }, ctx, "Dikembalikan");
+  const summary = `⏪ Koreksi dibatalkan — kembali ke **${fmt(sumNutrients(rows).calories)} kkal**.${remainingText(ctx)}`;
+  const entryMsg = saved.entryMsgId && (await interaction.channel.messages.fetch(saved.entryMsgId).catch(() => null));
+
+  if (entryMsg) {
+    await entryMsg.edit({ embeds: [embed], components: [undoRow(batchId)] });
+    await interaction.editReply({ content: summary, components: [] });
+  } else {
+    await interaction.editReply({ content: summary, embeds: [embed], components: [undoRow(batchId)] });
+  }
+  console.log(`⏪ Reverted correction of entry ${batchId}`);
+}
+
+// Entries being undone right now — a double-clicked Batalkan sends two interactions
+const undoing = new Set();
+
+async function handleUndo(interaction, batchId) {
+  if (undoing.has(batchId)) return;
+  undoing.add(batchId);
+  try {
+    const deleted = await deleteBatch(batchId);
+    const ctx = await dayContext(deleted[0]?.date ?? nowParts().date);
+    await interaction.editReply({ embeds: [cancelledEmbed(deleted, ctx)], components: [] });
+    console.log(`↩️ Undo entry ${batchId} (${deleted.length} item(s))`);
+  } finally {
+    undoing.delete(batchId);
+  }
 }
 
 /**
@@ -425,8 +502,16 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
+const BUTTONS = {
+  undo: { handle: handleUndo, failure: "Gagal membatalkan" },
+  revert: { handle: handleRevert, failure: "Gagal mengembalikan" },
+};
+
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isButton() || !interaction.customId.startsWith("undo:")) return;
+  if (!interaction.isButton()) return;
+  const [action, batchId] = interaction.customId.split(":");
+  const button = BUTTONS[action];
+  if (!button) return;
 
   if (!isUserAuthorized(interaction.user.id)) {
     await interaction.reply({ content: "⛔ Kamu tidak diizinkan memakai bot ini.", flags: MessageFlags.Ephemeral });
@@ -435,15 +520,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   try {
     await interaction.deferUpdate();
-    const batchId = interaction.customId.slice("undo:".length);
-    const deleted = await deleteBatch(batchId);
-    const ctx = await dayContext(deleted[0]?.date ?? nowParts().date);
-    await interaction.editReply({ embeds: [cancelledEmbed(deleted, ctx)], components: [] });
-    console.log(`↩️ Undo entry ${batchId} (${deleted.length} item(s))`);
+    await button.handle(interaction, batchId);
   } catch (err) {
-    console.error("Undo error:", err);
+    console.error(`Button ${action} error:`, err);
     await interaction
-      .followUp({ content: `❌ Gagal membatalkan: ${err.message}`, flags: MessageFlags.Ephemeral })
+      .followUp({ content: `❌ ${button.failure}: ${err.message}`, flags: MessageFlags.Ephemeral })
       .catch(() => {});
   }
 });

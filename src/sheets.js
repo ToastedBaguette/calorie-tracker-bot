@@ -56,6 +56,16 @@ let client = null;
 let logSheetId = null;
 let setupPromise = null;
 
+// Log writes run one at a time: rows are deleted by position, so two overlapping writes
+// (a double-clicked Batalkan, an undo during a correction) would hit the wrong rows
+let logWrites = Promise.resolve();
+
+function serializeLogWrite(task) {
+  const run = logWrites.then(task);
+  logWrites = run.catch(() => {});
+  return run;
+}
+
 function getClient() {
   if (!client) {
     if (!fs.existsSync(keyFile)) {
@@ -214,6 +224,17 @@ function toRow(entry) {
   ];
 }
 
+// Typed cells for batchUpdate, matching valueInputOption RAW: dates, times and IDs stay text
+function toCellRow(entry) {
+  return {
+    values: toRow(entry).map((value) => {
+      if (typeof value === "number") return { userEnteredValue: { numberValue: value } };
+      if (value === "" || value == null) return {};
+      return { userEnteredValue: { stringValue: String(value) } };
+    }),
+  };
+}
+
 function toTargets(values = []) {
   return Object.fromEntries(
     TARGET_KEYS.map((key, i) => {
@@ -244,55 +265,87 @@ export async function readLog() {
  * Appends item rows. RAW keeps "2026-09-30" and Discord IDs as text instead of letting Sheets reinterpret them.
  * OVERWRITE fills the empty rows below the table instead of inserting rows, which would shift references to Log.
  */
-export async function appendEntries(entries) {
-  await ensureReady();
-  await getClient().spreadsheets.values.append({
-    spreadsheetId,
-    range: `'${LOG}'!A1:O1`,
-    valueInputOption: "RAW",
-    insertDataOption: "OVERWRITE",
-    requestBody: { values: entries.map(toRow) },
+export function appendEntries(entries) {
+  return serializeLogWrite(async () => {
+    await ensureReady();
+    await getClient().spreadsheets.values.append({
+      spreadsheetId,
+      range: `'${LOG}'!A1:O1`,
+      valueInputOption: "RAW",
+      insertDataOption: "OVERWRITE",
+      requestBody: { values: entries.map(toRow) },
+    });
   });
 }
 
 /**
- * Deletes every row of one logged meal. Returns the deleted entries.
+ * One logged meal's entries and their 0-based sheet row indexes, top-down
  */
-export async function deleteBatch(id) {
-  await ensureReady();
-  const api = getClient();
-  const res = await api.spreadsheets.values.get({
+async function findBatchRows(id) {
+  const res = await getClient().spreadsheets.values.get({
     spreadsheetId,
     range: LOG_RANGE,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
-  const deleted = [];
+  const entries = [];
   const rowIndexes = [];
   (res.data.values || []).forEach((row, i) => {
     if (String(row[0] ?? "") === id) {
-      deleted.push(toEntry(row));
+      entries.push(toEntry(row));
       rowIndexes.push(i + 1); // +1 for the header row
     }
   });
+  return { entries, rowIndexes };
+}
 
-  if (rowIndexes.length > 0) {
-    // Bottom-up so each deletion doesn't shift the rows still to be deleted
-    const requests = rowIndexes
-      .reverse()
-      .map((i) => ({ deleteDimension: { range: { sheetId: logSheetId, dimension: "ROWS", startIndex: i, endIndex: i + 1 } } }));
-    await api.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
-  }
-
-  return deleted;
+// Bottom-up so each deletion doesn't shift the rows still to be deleted
+function deleteRowRequests(rowIndexes) {
+  return [...rowIndexes]
+    .reverse()
+    .map((i) => ({ deleteDimension: { range: { sheetId: logSheetId, dimension: "ROWS", startIndex: i, endIndex: i + 1 } } }));
 }
 
 /**
- * Replaces one logged meal's rows with corrected ones
+ * Deletes every row of one logged meal. Returns the deleted entries.
  */
-export async function replaceBatch(id, entries) {
-  await deleteBatch(id);
-  await appendEntries(entries);
+export function deleteBatch(id) {
+  return serializeLogWrite(async () => {
+    await ensureReady();
+    const { entries, rowIndexes } = await findBatchRows(id);
+    if (rowIndexes.length > 0) {
+      await getClient().spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: deleteRowRequests(rowIndexes) } });
+    }
+    return entries;
+  });
+}
+
+/**
+ * Replaces one logged meal's rows with corrected ones, in place, in one batchUpdate — Sheets applies
+ * all of it or nothing, so a failure leaves the old rows untouched. Returns the replaced entries.
+ */
+export function replaceBatch(id, entries) {
+  return serializeLogWrite(async () => {
+    await ensureReady();
+    const { entries: replaced, rowIndexes } = await findBatchRows(id);
+    if (rowIndexes.length === 0) throw new Error("entri sudah tidak ada di log");
+
+    // The new rows go in above the old ones, which shift down by entries.length before they are deleted
+    const start = rowIndexes[0];
+    const requests = [
+      { insertDimension: { range: { sheetId: logSheetId, dimension: "ROWS", startIndex: start, endIndex: start + entries.length } } },
+      {
+        updateCells: {
+          start: { sheetId: logSheetId, rowIndex: start, columnIndex: 0 },
+          rows: entries.map(toCellRow),
+          fields: "userEnteredValue",
+        },
+      },
+      ...deleteRowRequests(rowIndexes.map((i) => i + entries.length)),
+    ];
+    await getClient().spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
+    return replaced;
+  });
 }
 
 export async function getTargets() {

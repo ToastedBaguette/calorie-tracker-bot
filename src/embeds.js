@@ -119,14 +119,28 @@ export function cancelledEmbed(deleted, { dayTotals, targets, today }) {
     .addFields({ name: `${dayLabel(date, today)} · ${formatDateId(date)}`, value: dayProgress(dayTotals, targets) });
 }
 
+function undoButton(batchId) {
+  return new ButtonBuilder()
+    .setCustomId(`undo:${batchId}`)
+    .setLabel("Batalkan")
+    .setEmoji("↩️")
+    .setStyle(ButtonStyle.Secondary);
+}
+
 export function undoRow(batchId) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`undo:${batchId}`)
-      .setLabel("Batalkan")
-      .setEmoji("↩️")
-      .setStyle(ButtonStyle.Secondary)
-  );
+  return new ActionRowBuilder().addComponents(undoButton(batchId));
+}
+
+/**
+ * Kembalikan on a correction reply puts the entry back as it was; withUndo when that reply also shows the entry
+ */
+export function revertRow(batchId, withUndo = false) {
+  const revert = new ButtonBuilder()
+    .setCustomId(`revert:${batchId}`)
+    .setLabel("Kembalikan")
+    .setEmoji("⏪")
+    .setStyle(ButtonStyle.Secondary);
+  return new ActionRowBuilder().addComponents(...(withUndo ? [undoButton(batchId)] : []), revert);
 }
 
 /**
@@ -219,7 +233,8 @@ export function helpEmbed() {
       "• **Foto:** kirim foto makanan, screenshot pesanan GoFood/GrabFood, atau label gizi (boleh beberapa gambar). " +
         "Tambah keterangan kalau perlu, misal `setengah porsi, tanpa nasi`.\n" +
         "• **Teks:** `nasi padang rendang + es teh manis`, `sarapan 2 telur rebus`, `kemarin malam martabak 2 potong`\n" +
-        "• **Koreksi:** balas (reply) pesan bot, misal `cuma setengah porsi` atau `tambah kerupuk`\n" +
+        "• **Koreksi:** balas (reply) pesan bot, misal `cuma setengah porsi` atau `tambah kerupuk`. " +
+        "Koreksi keliru? Tekan ⏪ Kembalikan\n" +
         "• **Batalkan:** tekan tombol ↩️ Batalkan\n" +
         "• **Ringkasan:** `hari ini`, `kemarin`, `minggu ini`\n" +
         "• **Target:** `target 2000 p120 k250 l60` (kalori, protein, karbo, lemak) · `target` untuk melihat"
