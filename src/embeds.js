@@ -155,6 +155,19 @@ export function undoRow(batchId) {
 }
 
 /**
+ * Coba lagi on a failed reply runs the user's original message again
+ */
+export function retryRow(messageId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`retry:${messageId}`)
+      .setLabel("Coba lagi")
+      .setEmoji("🔁")
+      .setStyle(ButtonStyle.Primary)
+  );
+}
+
+/**
  * Kembalikan on a correction reply puts the entry back as it was; withUndo when that reply also shows the entry
  */
 export function revertRow(batchId, withUndo = false) {

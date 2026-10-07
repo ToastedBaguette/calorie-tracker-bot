@@ -110,48 +110,82 @@ HOW TO ESTIMATE:
 - If the portion is ambiguous, give the most likely estimate and lower 'confidence'. Never return zero calories for real food.
 - Write names and notes in Bahasa Indonesia.`;
 
+// A stuck model must not hang the reply: each call gets ATTEMPT_TIMEOUT_MS, a whole request TOTAL_TIMEOUT_MS
+const ATTEMPT_TIMEOUT_MS = 45 * 1000;
+const TOTAL_TIMEOUT_MS = 2 * 60 * 1000;
+// Demand spikes are short — when every model is busy, wait this long and go through them once more
+const BUSY_RETRY_DELAY_MS = 15 * 1000;
+
 /**
- * Helper to execute Gemini requests with automatic fallback across models
+ * Every model was busy or timed out — the same request is worth trying again later
  */
-async function generateWithFallback(contents, schema) {
+export class GeminiBusyError extends Error {
+  constructor() {
+    super("Gemini sedang sibuk");
+    this.name = "GeminiBusyError";
+  }
+}
+
+function isBusy(err) {
+  return [429, 503].includes(err.status) || /\b(429|503)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|high demand/.test(err.message || "");
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Runs a Gemini request across the fallback models. If they are all busy or time out, calls onRetry,
+ * waits, and goes through them once more; if that fails too, throws GeminiBusyError.
+ */
+async function generateWithFallback(contents, schema, onRetry) {
+  const deadline = Date.now() + TOTAL_TIMEOUT_MS;
   let lastError = null;
+  let busy = false;
 
-  for (const model of CANDIDATE_MODELS) {
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: schema,
-        },
-      });
+  for (let round = 0; round < 2; round++) {
+    if (round > 0) {
+      if (!busy || Date.now() + BUSY_RETRY_DELAY_MS >= deadline) break;
+      console.warn(`All models busy. Retrying in ${BUSY_RETRY_DELAY_MS / 1000} s...`);
+      await onRetry?.();
+      await sleep(BUSY_RETRY_DELAY_MS);
+      busy = false;
+    }
 
-      const text = response.text?.trim();
-      if (!text) throw new Error("Empty response received from Gemini");
+    for (const model of CANDIDATE_MODELS) {
+      const timeLeft = deadline - Date.now();
+      if (timeLeft <= 0) break;
+      const signal = AbortSignal.timeout(Math.min(ATTEMPT_TIMEOUT_MS, timeLeft));
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: schema,
+            abortSignal: signal,
+          },
+        });
 
-      return JSON.parse(text);
-    } catch (err) {
-      lastError = err;
-      const errMsg = err.message || "";
-      const isTransient =
-        errMsg.includes("503") ||
-        errMsg.includes("429") ||
-        errMsg.includes("UNAVAILABLE") ||
-        errMsg.includes("high demand") ||
-        errMsg.includes("RESOURCE_EXHAUSTED");
+        const text = response.text?.trim();
+        if (!text) throw new Error("Empty response received from Gemini");
 
-      if (isTransient) {
-        console.warn(`Model ${model} unavailable/busy. Trying fallback...`);
-        await new Promise((r) => setTimeout(r, 800));
-        continue;
+        return JSON.parse(text);
+      } catch (err) {
+        lastError = err;
+        if (signal.aborted) {
+          busy = true;
+          console.warn(`Model ${model} timed out. Trying fallback...`);
+        } else if (isBusy(err)) {
+          busy = true;
+          console.warn(`Model ${model} unavailable/busy. Trying fallback...`);
+          await sleep(800);
+        } else {
+          console.warn(`Model ${model} failed (${err.message}). Trying fallback...`);
+        }
       }
-
-      console.warn(`Model ${model} failed (${err.message}). Trying fallback...`);
     }
   }
 
-  throw lastError;
+  throw busy ? new GeminiBusyError() : lastError;
 }
 
 function normalize(result) {
@@ -179,8 +213,9 @@ Decide whether the new message adjusts that entry or logs new food:
  * Estimates the nutrition of a meal from images (photos/screenshots) and/or a text description.
  * images: [{ data: base64, mimeType }]; time: local "HH:mm";
  * previous: the user's latest entry { time, meal, items } — lets a text follow-up correct it.
+ * onRetry: called before a second pass when every model is busy.
  */
-export async function analyzeFood({ images = [], text = "", time, previous = null }) {
+export async function analyzeFood({ images = [], text = "", time, previous = null, onRetry }) {
   const task = images.length
     ? `Analyze the food and drinks in the attached image${images.length > 1 ? "s (they belong to the same meal)" : ""}.`
     : "The user describes in text what they ate or drank (no image).";
@@ -195,14 +230,14 @@ ${previous ? `\n${previousEntryGuide(previous)}\n` : ""}
 ${text ? `User note:\n"""\n${text}\n"""` : ""}`;
 
   const parts = [...images.map((img) => ({ inlineData: img })), { text: prompt }];
-  const result = await generateWithFallback([{ role: "user", parts }], FOOD_LOG_SCHEMA);
+  const result = await generateWithFallback([{ role: "user", parts }], FOOD_LOG_SCHEMA, onRetry);
   return normalize(result);
 }
 
 /**
  * Applies a free-text correction ("cuma setengah porsi", "tambah es teh") to a logged entry
  */
-export async function reviseFood({ items, meal, correction }) {
+export async function reviseFood({ items, meal, correction, onRetry }) {
   const prompt = `${ESTIMATION_GUIDE}
 
 The user logged this ${meal} entry earlier:
@@ -216,6 +251,6 @@ ${correction}
 For UPDATE, return the complete corrected list of items: keep untouched items exactly as they are, and scale, remove, add, or rename items as the reply says.
 Set meal and dayOffset only if the reply changes them; otherwise meal AUTO and dayOffset 0.`;
 
-  const result = await generateWithFallback([{ role: "user", parts: [{ text: prompt }] }], REVISION_SCHEMA);
+  const result = await generateWithFallback([{ role: "user", parts: [{ text: prompt }] }], REVISION_SCHEMA, onRetry);
   return normalize(result);
 }

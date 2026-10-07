@@ -22,6 +22,9 @@ same stack: Node.js, discord.js, `@google/genai`, Google Sheets API, Docker Comp
 
 Estimates are AI guesses from a picture — good for trends, not lab-grade.
 
+When Gemini is overloaded, the bot goes through its models twice, 15 s apart, with a 45 s timeout per call.
+If they are still busy, nothing is saved and the reply offers a **Coba lagi** button that runs your message again.
+
 ## Commands
 
 | Message | What it does |

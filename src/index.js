@@ -1,6 +1,6 @@
 import { Client, Events, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
 import dotenv from "dotenv";
-import { analyzeFood, reviseFood } from "./gemini.js";
+import { GeminiBusyError, analyzeFood, reviseFood } from "./gemini.js";
 import { appendEntries, deleteBatch, ensureReady, getTargets, readLog, replaceBatch, setTargets } from "./sheets.js";
 import {
   MEALS,
@@ -22,6 +22,7 @@ import {
   entryEmbed,
   fmt,
   helpEmbed,
+  retryRow,
   revertRow,
   targetEmbed,
   undoRow,
@@ -273,12 +274,42 @@ async function handleUndo(interaction, batchId) {
 }
 
 /**
+ * The bot's reply that shows a request's progress: a new one, or — on Coba lagi — the failed one, reused
+ */
+async function workingMessage(message, content, statusMsg) {
+  if (!statusMsg) return message.reply(content);
+  await statusMsg.edit({ content, embeds: [], components: [] });
+  return statusMsg;
+}
+
+function onGeminiRetry(statusMsg) {
+  return () => statusMsg.edit("⏳ *Gemini sedang sibuk, mencoba lagi...*").catch(() => {});
+}
+
+/**
+ * When Gemini was busy, nothing was saved — offer Coba lagi for the same message. Other errors as they are.
+ */
+async function showFailure(statusMsg, message, failure, err) {
+  if (err instanceof GeminiBusyError) {
+    await statusMsg.edit({
+      content: "⏳ Gemini sedang sibuk, jadi belum ada yang disimpan. Tekan **Coba lagi** sebentar lagi.",
+      embeds: [],
+      components: [retryRow(message.id)],
+    });
+  } else {
+    await statusMsg.edit({ content: `❌ ${failure}: ${err.message}`, embeds: [], components: [] });
+  }
+}
+
+/**
  * Photo(s) and/or text -> estimate -> append to Log -> reply with Undo button.
  * A text-only message may instead be a follow-up correcting the latest entry ("nasinya cuma 1").
  */
-async function handleFoodLog(message, images, text) {
-  const statusMsg = await message.reply(
-    images.length ? "🔍 *Menganalisis foto makanan dengan Gemini Vision...*" : "🔍 *Menghitung nutrisi...*"
+async function handleFoodLog(message, images, text, retryOf = null) {
+  const statusMsg = await workingMessage(
+    message,
+    images.length ? "🔍 *Menganalisis foto makanan dengan Gemini Vision...*" : "🔍 *Menghitung nutrisi...*",
+    retryOf
   );
 
   try {
@@ -297,6 +328,7 @@ async function handleFoodLog(message, images, text) {
       text,
       time,
       previous,
+      onRetry: onGeminiRetry(statusMsg),
     });
 
     if (result.intent === "CORRECT_PREVIOUS" && previousRows) {
@@ -337,7 +369,7 @@ async function handleFoodLog(message, images, text) {
     );
   } catch (err) {
     console.error("Food log error:", err);
-    await statusMsg.edit(`❌ Gagal mencatat makanan: ${err.message}`);
+    await showFailure(statusMsg, message, "Gagal mencatat makanan", err);
   }
 }
 
@@ -345,14 +377,14 @@ async function handleFoodLog(message, images, text) {
  * A text reply to one of the bot's entry messages corrects that entry.
  * Returns false when the replied-to message isn't an entry, so it's handled as a normal message.
  */
-async function handleCorrection(message, text) {
+async function handleCorrection(message, text, retryOf = null) {
   const ref = await message.fetchReference().catch(() => null);
   if (!ref || ref.author.id !== client.user.id) return false;
 
   const batchId = findUndoId(ref);
   if (!batchId) return false;
 
-  const statusMsg = await message.reply("✏️ *Memperbarui entri...*");
+  const statusMsg = await workingMessage(message, "✏️ *Memperbarui entri...*", retryOf);
 
   try {
     const { entries } = await readLog();
@@ -362,7 +394,12 @@ async function handleCorrection(message, text) {
       return true;
     }
 
-    const result = await reviseFood({ items: existing.map(sanitizeItem), meal: existing[0].meal, correction: text });
+    const result = await reviseFood({
+      items: existing.map(sanitizeItem),
+      meal: existing[0].meal,
+      correction: text,
+      onRetry: onGeminiRetry(statusMsg),
+    });
 
     if (result.action === "NONE") {
       await statusMsg.edit(
@@ -375,7 +412,7 @@ async function handleCorrection(message, text) {
     await applyCorrection({ batchId, existing, revision, statusMsg, entryMsg: ref });
   } catch (err) {
     console.error("Correction error:", err);
-    await statusMsg.edit(`❌ Gagal mengoreksi entri: ${err.message}`);
+    await showFailure(statusMsg, message, "Gagal mengoreksi entri", err);
   }
   return true;
 }
@@ -500,6 +537,51 @@ client.once(Events.ClientReady, (c) => {
   console.log("=======================================================\n");
 });
 
+/**
+ * Routes a user message. retryOf: the bot's failed reply when Coba lagi runs the message again.
+ */
+async function handleMessage(message, retryOf = null) {
+  const text = message.content.trim();
+  const command = text.toLowerCase().replace(/[?!.]+$/, "").replace(/\s+/g, " ").trim();
+  const images = [...message.attachments.values()]
+    .filter((att) => att.contentType?.startsWith("image/"))
+    .slice(0, MAX_IMAGES);
+
+  // 1. Reply to an entry -> correction
+  if (message.reference?.messageId && text && images.length === 0) {
+    if (await handleCorrection(message, text, retryOf)) return;
+  }
+
+  // 2. Commands
+  if (images.length === 0) {
+    if (HELP_COMMANDS.has(command)) {
+      await message.reply({ embeds: [helpEmbed()] });
+      return;
+    }
+    if (TODAY_COMMANDS.has(command)) {
+      await replyDay(message, 0);
+      return;
+    }
+    if (YESTERDAY_COMMANDS.has(command)) {
+      await replyDay(message, -1);
+      return;
+    }
+    if (WEEK_COMMANDS.has(command)) {
+      await replyWeek(message);
+      return;
+    }
+    const targets = parseTargetCommand(text);
+    if (targets) {
+      await replyTargets(message, targets);
+      return;
+    }
+    if (!text) return;
+  }
+
+  // 3. Food photo(s) or text description
+  await handleFoodLog(message, images, text, retryOf);
+}
+
 client.on(Events.MessageCreate, async (message) => {
   // Ignore bots and webhooks
   if (message.author.bot) return;
@@ -508,60 +590,46 @@ client.on(Events.MessageCreate, async (message) => {
   if (!isUserAuthorized(message.author.id)) return;
   if (!isChannelAllowed(message.channelId)) return;
 
-  const text = message.content.trim();
-  const command = text.toLowerCase().replace(/[?!.]+$/, "").replace(/\s+/g, " ").trim();
-  const images = [...message.attachments.values()]
-    .filter((att) => att.contentType?.startsWith("image/"))
-    .slice(0, MAX_IMAGES);
-
   try {
-    // 1. Reply to an entry -> correction
-    if (message.reference?.messageId && text && images.length === 0) {
-      if (await handleCorrection(message, text)) return;
-    }
-
-    // 2. Commands
-    if (images.length === 0) {
-      if (HELP_COMMANDS.has(command)) {
-        await message.reply({ embeds: [helpEmbed()] });
-        return;
-      }
-      if (TODAY_COMMANDS.has(command)) {
-        await replyDay(message, 0);
-        return;
-      }
-      if (YESTERDAY_COMMANDS.has(command)) {
-        await replyDay(message, -1);
-        return;
-      }
-      if (WEEK_COMMANDS.has(command)) {
-        await replyWeek(message);
-        return;
-      }
-      const targets = parseTargetCommand(text);
-      if (targets) {
-        await replyTargets(message, targets);
-        return;
-      }
-      if (!text) return;
-    }
-
-    // 3. Food photo(s) or text description
-    await handleFoodLog(message, images, text);
+    await handleMessage(message);
   } catch (err) {
     console.error("Discord message error:", err);
     await message.reply(`❌ Terjadi kesalahan: ${err.message}`).catch(() => {});
   }
 });
 
+// Messages being run again right now — a double-clicked Coba lagi sends two interactions
+const retrying = new Set();
+
+/**
+ * Coba lagi: runs the user's original message again, reusing the failed reply
+ */
+async function handleRetry(interaction, messageId) {
+  if (retrying.has(messageId)) return;
+  retrying.add(messageId);
+  try {
+    const message = await interaction.channel.messages.fetch(messageId).catch(() => null);
+    if (!message) {
+      await interaction.editReply({ content: "⚠️ Pesan aslinya sudah dihapus — kirim ulang makanannya.", components: [] });
+      return;
+    }
+    console.log(`🔁 Retry message ${messageId}`);
+    await handleMessage(message, interaction.message);
+  } finally {
+    retrying.delete(messageId);
+  }
+}
+
 const BUTTONS = {
   undo: { handle: handleUndo, failure: "Gagal membatalkan" },
   revert: { handle: handleRevert, failure: "Gagal mengembalikan" },
+  retry: { handle: handleRetry, failure: "Gagal mencoba lagi" },
 };
 
+// customId "<action>:<id>" — an entry's batch ID, or for retry the user's message ID
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isButton()) return;
-  const [action, batchId] = interaction.customId.split(":");
+  const [action, id] = interaction.customId.split(":");
   const button = BUTTONS[action];
   if (!button) return;
 
@@ -572,7 +640,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   try {
     await interaction.deferUpdate();
-    await button.handle(interaction, batchId);
+    await button.handle(interaction, id);
   } catch (err) {
     console.error(`Button ${action} error:`, err);
     await interaction
