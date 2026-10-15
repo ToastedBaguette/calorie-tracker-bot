@@ -11,12 +11,12 @@ if (!apiKey) {
 
 const ai = new GoogleGenAI({ apiKey });
 
-// Candidate models in order of priority. Overloads tend to hit one model family at a time, so the
-// chain alternates families: after one busy or hung model the next comes from a different capacity pool
+// Candidate models in order of priority. Overloads hit model versions separately, so the chain spreads
+// across versions and the Lite tier instead of trying the ones that are often busy together back to back
 const CANDIDATE_MODELS = [
   ...new Set([
     process.env.GEMINI_MODEL || "gemini-3.5-flash",
-    "gemini-2.5-flash",
+    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
     "gemini-flash-latest",
