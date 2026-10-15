@@ -11,9 +11,16 @@ if (!apiKey) {
 
 const ai = new GoogleGenAI({ apiKey });
 
-// Candidate models in order of priority (most stable & fastest first)
+// Candidate models in order of priority. Overloads tend to hit one model family at a time, so the
+// chain alternates families: after one busy or hung model the next comes from a different capacity pool
 const CANDIDATE_MODELS = [
-  ...new Set([process.env.GEMINI_MODEL || "gemini-3.5-flash", "gemini-3.6-flash", "gemini-flash-latest"]),
+  ...new Set([
+    process.env.GEMINI_MODEL || "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-latest",
+  ]),
 ];
 
 const FOOD_ITEM_SCHEMA = {
@@ -130,6 +137,21 @@ function isBusy(err) {
   return [429, 503].includes(err.status) || /\b(429|503)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|high demand/.test(err.message || "");
 }
 
+/**
+ * What the API said, on one line — "503 UNAVAILABLE: This model is currently experiencing high demand..."
+ * tells an overload from a quota limit in the log
+ */
+function errorSummary(err) {
+  let summary = err.message || String(err);
+  try {
+    const { code, status, message } = JSON.parse(summary).error;
+    summary = `${code} ${status}: ${message}`;
+  } catch {
+    // Not the API's JSON error body — keep the message as it is
+  }
+  return summary.replace(/\s+/g, " ").slice(0, 400);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -176,10 +198,10 @@ async function generateWithFallback(contents, schema, onRetry) {
           console.warn(`Model ${model} timed out. Trying fallback...`);
         } else if (isBusy(err)) {
           busy = true;
-          console.warn(`Model ${model} unavailable/busy. Trying fallback...`);
+          console.warn(`Model ${model} unavailable/busy (${errorSummary(err)}). Trying fallback...`);
           await sleep(800);
         } else {
-          console.warn(`Model ${model} failed (${err.message}). Trying fallback...`);
+          console.warn(`Model ${model} failed (${errorSummary(err)}). Trying fallback...`);
         }
       }
     }
