@@ -141,6 +141,18 @@ export function sanitizeItem(item) {
   return clean;
 }
 
+const itemKey = (item) => String(item.name || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+/**
+ * A model-flagged correction must keep at least one item of the entry it replaces — or empty it, which
+ * deletes the entry. A list with nothing in common is new food the model mistook for a correction.
+ */
+export function isPlausibleCorrection(previousItems, revisedItems) {
+  if (revisedItems.length === 0) return true;
+  const previous = new Set(previousItems.map(itemKey));
+  return revisedItems.some((item) => previous.has(itemKey(item)));
+}
+
 /**
  * Sums every nutrient across items (entries from the sheet or fresh model items)
  */

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   addDays,
   formatDateId,
+  isPlausibleCorrection,
   mealFromTime,
   nowParts,
   parseClockTime,
@@ -107,4 +108,22 @@ test("parseWeeklySchedule takes a day and a time", () => {
   assert.equal(parseWeeklySchedule(""), null);
   assert.equal(parseWeeklySchedule("minggu 25:00"), null);
   assert.equal(parseWeeklySchedule("constructor 05:00"), null);
+});
+
+test("isPlausibleCorrection needs an item in common with the previous entry", () => {
+  const dinner = [
+    { name: "Nasi putih", calories: 260 },
+    { name: "Ayam goreng", calories: 390 },
+    { name: "Es teh manis", calories: 90 },
+  ];
+  // Scaled, added to, or with one item removed — still the same meal
+  assert.equal(isPlausibleCorrection(dinner, [{ name: "Nasi putih", calories: 130 }, dinner[1], dinner[2]]), true);
+  assert.equal(isPlausibleCorrection(dinner, [...dinner, { name: "Kerupuk", calories: 60 }]), true);
+  assert.equal(isPlausibleCorrection(dinner, [dinner[0], dinner[1]]), true);
+  // Names match regardless of case and spacing
+  assert.equal(isPlausibleCorrection(dinner, [{ name: " nasi  PUTIH ", calories: 260 }]), true);
+  // Empty list = remove the whole entry, which is a real correction
+  assert.equal(isPlausibleCorrection(dinner, []), true);
+  // Nothing in common — a new meal mistaken for a correction (the 24 Okt case)
+  assert.equal(isPlausibleCorrection(dinner, [{ name: "Roti gandum", calories: 150 }, { name: "Kopi susu", calories: 100 }]), false);
 });

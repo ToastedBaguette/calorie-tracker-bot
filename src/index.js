@@ -5,6 +5,7 @@ import { appendEntries, deleteBatch, ensureReady, getTargets, readLog, replaceBa
 import {
   MEALS,
   addDays,
+  isPlausibleCorrection,
   mealFromTime,
   nowParts,
   parseClockTime,
@@ -331,7 +332,9 @@ async function handleFoodLog(message, images, text, retryOf = null) {
       onRetry: onGeminiRetry(statusMsg),
     });
 
-    if (result.intent === "CORRECT_PREVIOUS" && previousRows) {
+    if (result.intent === "CORRECT_PREVIOUS" && previousRows && !isPlausibleCorrection(previousRows, result.items)) {
+      console.warn(`Correction of entry ${previousRows[0].id} shares no items with it — logging as new instead`);
+    } else if (result.intent === "CORRECT_PREVIOUS" && previousRows) {
       const batchId = previousRows[0].id;
       const entryMsg = await findEntryMessage(message.channel, batchId);
       await applyCorrection({ batchId, existing: previousRows, revision: result, statusMsg, entryMsg });
